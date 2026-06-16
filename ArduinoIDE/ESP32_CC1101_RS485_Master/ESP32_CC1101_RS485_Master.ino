@@ -78,6 +78,7 @@ static int8_t lastMatchedIndex = -1;
 static char lastMatchedName[NAME_LEN] = "";
 static bool learnMode = false;
 static uint32_t learnStartedMs = 0;
+static bool radioReady = false;
 static uint32_t outputOffAt[OUTPUT_COUNT] = {0};
 static uint32_t rgbOffAt = 0;
 static uint8_t rgbBlinkSteps = 0;
@@ -667,6 +668,7 @@ static void handleCode(uint32_t code) {
 }
 
 static void processRf() {
+  if (!radioReady) return;
   pollRfFrameReady();
   noInterrupts();
   const bool ready = isrFrameReady;
@@ -889,6 +891,8 @@ static void handleConfig() {
   html += WiFi.getMode() == WIFI_AP ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
   html += F("<br><b>Wi-Fi SSID:</b> ");
   html += htmlEscape(wifiSsid);
+  html += F("<br><b>CC1101:</b> ");
+  html += radioReady ? "OK" : "не найден, пульты отключены";
   html += F("<br><b>Режим обучения:</b> ");
   html += learnMode ? "ВКЛ" : "ВЫКЛ";
   html += F("<br><b>Последний принятый код:</b> <span id='lastSeen'>");
@@ -1412,11 +1416,12 @@ void setup() {
   rs485Serial.begin(RS485_BAUD, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
   Serial.print("[BOOT] Learned records: ");
   Serial.println(recordCount);
-  if (!beginRadio()) {
-    Serial.println("[FATAL] Check CC1101 wiring and power");
-    while (true) delay(1000);
+  radioReady = beginRadio();
+  if (radioReady) {
+    resetRfCapture();
+  } else {
+    Serial.println("[WARN] CC1101 not found, RF remotes are disabled");
   }
-  resetRfCapture();
   beginWeb();
   sendWindowConfigToRp2040();
   sendRpCommand("STATUS");
