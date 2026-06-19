@@ -58,9 +58,10 @@ static constexpr uint32_t LEARN_TIMEOUT_MS = 30000;
 struct ButtonRecord {
   uint32_t code;
   uint8_t output;
-  uint8_t actionType; // 0 local output, 1 local UART RP2040, 2 RS-485 RP2040
+  uint8_t actionType; // 0 local output, 1 local UART RP2040, 2 RS-485 RP2040, 3 RP2040 group
   uint8_t actionCommand; // 0 none, 1 open, 2 closed, 3 vent, 4 stop
   uint8_t rs485Node; // 0..7
+  uint16_t targetMask; // bit 0 local UART, bits 1..8 RS-485 nodes
   bool enabled;
   char name[NAME_LEN];
 };
@@ -337,6 +338,7 @@ static void saveRecords() {
     snprintf(key, sizeof(key), "act%u", i); prefs.putUChar(key, records[i].actionType);
     snprintf(key, sizeof(key), "cmd%u", i); prefs.putUChar(key, records[i].actionCommand);
     snprintf(key, sizeof(key), "node%u", i); prefs.putUChar(key, records[i].rs485Node);
+    snprintf(key, sizeof(key), "tmask%u", i); prefs.putUShort(key, records[i].targetMask);
     snprintf(key, sizeof(key), "en%u", i); prefs.putBool(key, records[i].enabled);
     snprintf(key, sizeof(key), "name%u", i); prefs.putString(key, records[i].name);
   }
@@ -365,9 +367,14 @@ static void loadRecords() {
     snprintf(key, sizeof(key), "act%u", i); records[i].actionType = prefs.getUChar(key, 0);
     snprintf(key, sizeof(key), "cmd%u", i); records[i].actionCommand = prefs.getUChar(key, 0);
     snprintf(key, sizeof(key), "node%u", i); records[i].rs485Node = prefs.getUChar(key, 0);
-    records[i].actionType = constrain(records[i].actionType, 0, 2);
+    snprintf(key, sizeof(key), "tmask%u", i); records[i].targetMask = prefs.getUShort(key, 0);
+    records[i].actionType = constrain(records[i].actionType, 0, 3);
     records[i].actionCommand = constrain(records[i].actionCommand, 0, 4);
     records[i].rs485Node = constrain(records[i].rs485Node, 0, RS485_NODE_COUNT - 1);
+    if (records[i].targetMask == 0) {
+      if (records[i].actionType == 1) records[i].targetMask = 0x0001;
+      else if (records[i].actionType == 2) records[i].targetMask = static_cast<uint16_t>(1u << (records[i].rs485Node + 1));
+    }
     snprintf(key, sizeof(key), "en%u", i); records[i].enabled = prefs.getBool(key, true);
     snprintf(key, sizeof(key), "name%u", i);
     String name = prefs.getString(key, "");
@@ -590,6 +597,14 @@ static String rfActionLabel(const ButtonRecord &record) {
     label += windowCommandLabel(record.actionCommand);
     return label;
   }
+  if (record.actionType == 3) {
+    uint8_t count = 0;
+    if (record.targetMask & 0x0001) ++count;
+    for (uint8_t i = 0; i < RS485_NODE_COUNT; ++i) {
+      if (record.targetMask & (1u << (i + 1))) ++count;
+    }
+    return "Группа RP2040 (" + String(count) + "): " + windowCommandLabel(record.actionCommand);
+  }
   if (record.output < OUTPUT_COUNT) return "Выход " + String(record.output + 1);
   return "-";
 }
@@ -606,6 +621,17 @@ static void executeRfAction(const ButtonRecord &record) {
     const Rs485NodeConfig &node = rs485Nodes[record.rs485Node];
     if (!node.enabled) return;
     sendRs485Line("@" + String(node.address) + " " + commandLine);
+    return;
+  }
+  if (record.actionType == 3) {
+    if (!commandLine.length()) return;
+    if (record.targetMask & 0x0001) sendRpCommand(commandLine);
+    for (uint8_t i = 0; i < RS485_NODE_COUNT; ++i) {
+      if ((record.targetMask & (1u << (i + 1))) == 0) continue;
+      if (!rs485Nodes[i].enabled) continue;
+      sendRs485Line("@" + String(rs485Nodes[i].address) + " " + commandLine);
+      delay(15);
+    }
     return;
   }
   if (record.output < OUTPUT_COUNT) pulseOutput(record.output);
@@ -643,6 +669,7 @@ static bool addRecord(uint32_t code) {
   record.actionType = 0;
   record.actionCommand = 0;
   record.rs485Node = 0;
+  record.targetMask = 0;
   record.enabled = true;
   snprintf(record.name, sizeof(record.name), "Button %u", recordCount + 1);
   ++recordCount;
@@ -969,7 +996,7 @@ static void handleConfig() {
   html += F("\"><p><button type='submit'>Сохранить Wi-Fi</button></p>");
   html += F("<p class='muted'>Новые данные Wi-Fi начнут использоваться после рестарта ESP32.</p></form></div>");
 
-  html += F("<form method='post' action='/save'><table><tr><th>#</th><th>Код</th><th>Название</th><th>Действие</th><th>Команда</th><th>RS-485</th><th>Лок. выход</th><th>Включено</th><th>Индикатор</th><th>Удалить</th></tr>");
+  html += F("<form method='post' action='/save'><table><tr><th>#</th><th>Код</th><th>Название</th><th>Действие</th><th>Команда</th><th>RS-485</th><th>Цели группы</th><th>Лок. выход</th><th>Включено</th><th>Индикатор</th><th>Удалить</th></tr>");
   for (uint8_t i = 0; i < recordCount; ++i) {
     const uint16_t remoteId = remoteIdFromCode(records[i].code);
     if (i == 0 || remoteIdFromCode(records[i - 1].code) != remoteId) {
@@ -979,7 +1006,7 @@ static void handleConfig() {
       }
       uint8_t buttonsInRemote = 0;
       for (uint8_t j = i; j < recordCount && remoteIdFromCode(records[j].code) == remoteId; ++j) ++buttonsInRemote;
-      html += F("<tr><th colspan='10'>Пульт ");
+      html += F("<tr><th colspan='11'>Пульт ");
       html += String(remoteNumber);
       html += F(" / адрес ");
       html += remoteHex(remoteId);
@@ -1005,7 +1032,9 @@ static void handleConfig() {
     if (records[i].actionType == 1) html += F(" selected");
     html += F(">Локальная RP2040 UART</option><option value='2'");
     if (records[i].actionType == 2) html += F(" selected");
-    html += F(">RP2040 RS-485</option></select></td><td><select name='cmd");
+    html += F(">RP2040 RS-485</option><option value='3'");
+    if (records[i].actionType == 3) html += F(" selected");
+    html += F(">Группа RP2040</option></select></td><td><select name='cmd");
     html += String(i);
     html += F("'><option value='0'");
     if (records[i].actionCommand == 0) html += F(" selected");
@@ -1033,7 +1062,25 @@ static void handleConfig() {
       html += htmlEscape(rs485Nodes[node].name);
       html += F("</option>");
     }
-    html += F("</select></td><td><select name='out");
+    html += F("</select></td><td><label><input type='checkbox' name='tlocal");
+    html += String(i);
+    html += F("' value='1'");
+    if (records[i].targetMask & 0x0001) html += F(" checked");
+    html += F("> ");
+    html += htmlEscape(localRpName);
+    html += F("</label>");
+    for (uint8_t node = 0; node < RS485_NODE_COUNT; ++node) {
+      html += F("<label><input type='checkbox' name='tn");
+      html += String(i);
+      html += F("_");
+      html += String(node);
+      html += F("' value='1'");
+      if (records[i].targetMask & (1u << (node + 1))) html += F(" checked");
+      html += F("> ");
+      html += htmlEscape(rs485Nodes[node].name);
+      html += F("</label>");
+    }
+    html += F("</td><td><select name='out");
     html += String(i);
     html += F("'><option value='255'>Не назначен</option>");
     for (uint8_t out = 0; out < OUTPUT_COUNT; ++out) {
@@ -1147,9 +1194,19 @@ static void handleSave() {
     const String enKey = "en" + String(i);
     if (server.hasArg(nameKey)) strlcpy(record.name, server.arg(nameKey).c_str(), sizeof(record.name));
     if (server.hasArg(outKey)) record.output = static_cast<uint8_t>(server.arg(outKey).toInt());
-    if (server.hasArg(actKey)) record.actionType = static_cast<uint8_t>(constrain(server.arg(actKey).toInt(), 0, 2));
+    if (server.hasArg(actKey)) record.actionType = static_cast<uint8_t>(constrain(server.arg(actKey).toInt(), 0, 3));
     if (server.hasArg(cmdKey)) record.actionCommand = static_cast<uint8_t>(constrain(server.arg(cmdKey).toInt(), 0, 4));
     if (server.hasArg(nodeKey)) record.rs485Node = static_cast<uint8_t>(constrain(server.arg(nodeKey).toInt(), 0, RS485_NODE_COUNT - 1));
+    uint16_t targetMask = 0;
+    if (server.hasArg("tlocal" + String(i))) targetMask |= 0x0001;
+    for (uint8_t node = 0; node < RS485_NODE_COUNT; ++node) {
+      if (server.hasArg("tn" + String(i) + "_" + String(node))) targetMask |= static_cast<uint16_t>(1u << (node + 1));
+    }
+    if (targetMask == 0) {
+      if (record.actionType == 1) targetMask = 0x0001;
+      else if (record.actionType == 2) targetMask = static_cast<uint16_t>(1u << (record.rs485Node + 1));
+    }
+    record.targetMask = targetMask;
     record.enabled = server.hasArg(enKey);
     newRecords[newCount++] = record;
   }

@@ -572,11 +572,12 @@ static String valueStringAfter(const String &line, const String &key) {
   return line.substring(start, end);
 }
 
-static void replyStatus() {
-  rs485Send("@" + String(nodeAddress) + " " + statusJson());
+static void replyStatus(bool direct = false) {
+  if (direct) rs485Send(statusJson());
+  else rs485Send("@" + String(nodeAddress) + " " + statusJson());
 }
 
-static void handleCommand(String payload, bool broadcast) {
+static void handleCommand(String payload, bool broadcast, bool direct = false) {
   payload.trim();
   payload.toUpperCase();
 
@@ -592,7 +593,7 @@ static void handleCommand(String payload, bool broadcast) {
     if (uid == nodeUid && newAddress >= 1 && newAddress <= 247) {
       nodeAddress = static_cast<uint8_t>(newAddress);
       configSaved = saveConfigToFlash();
-      replyStatus();
+      replyStatus(direct);
     }
     return;
   }
@@ -604,7 +605,7 @@ static void handleCommand(String payload, bool broadcast) {
   else if (payload == "CMD VENT") startMove(TARGET_VENT);
   else if (payload == "CMD STOP") stopAll("stopped", 0, false);
   else if (payload == "STATUS") {
-    replyStatus();
+    replyStatus(direct);
     return;
   } else if (payload.startsWith("CFG ")) {
     int commonMax = valueAfter(payload, "MAXMA=", -1);
@@ -627,12 +628,15 @@ static void handleCommand(String payload, bool broadcast) {
     capConfirmMs = constrain(static_cast<uint32_t>(valueAfter(payload, "CAPMS=", capConfirmMs)), 0ul, 5000ul);
     configSaved = saveConfigToFlash();
   }
-  replyStatus();
+  replyStatus(direct);
 }
 
 static void parseRs485Line(String line) {
   line.trim();
-  if (!line.startsWith("@")) return;
+  if (!line.startsWith("@")) {
+    handleCommand(line, false, true);
+    return;
+  }
   const int space = line.indexOf(' ');
   if (space < 0) return;
   const int address = line.substring(1, space).toInt();
