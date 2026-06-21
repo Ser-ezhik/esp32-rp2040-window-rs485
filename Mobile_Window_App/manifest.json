@@ -1,0 +1,8 @@
+{
+  "name": "Окна ESP32",
+  "short_name": "Окна",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#030918",
+  "theme_color": "#061229"
+}

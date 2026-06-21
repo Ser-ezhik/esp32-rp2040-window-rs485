@@ -923,6 +923,18 @@ static bool webAuth() {
   return false;
 }
 
+static void addApiCorsHeaders() {
+  server.sendHeader("Access-Control-Allow-Origin", "*");
+  server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  server.sendHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  server.sendHeader("Access-Control-Allow-Private-Network", "true");
+}
+
+static void handleApiCorsOptions() {
+  addApiCorsHeaders();
+  server.send(204);
+}
+
 static String htmlEscape(const String &input) {
   String out;
   out.reserve(input.length() + 8);
@@ -1280,6 +1292,24 @@ static void handleRoot() {
   html += F("<script>let ub=0,cb=0;function n(v){return {open:'Открыто',closed:'Закрыто',vent:'Проветривание',none:'неизвестно'}[v]||v}function rq(u,o,m){let c=new AbortController(),t=setTimeout(()=>c.abort(),m);o=o||{};o.signal=c.signal;return fetch(u,o).finally(()=>clearTimeout(t))}async function upd(){if(ub||cb)return;ub=1;try{let t=document.getElementById('target').value;let r=await rq('/api/window?target='+encodeURIComponent(t),{cache:'no-store'},900);let s=await r.json();document.getElementById('wstatus').innerHTML='<b>Окно:</b> '+(s.name||'-')+'<br><b>Состояние:</b> '+(s.state||'unknown')+'<br><b>Цель:</b> '+n(s.target)+'<br><b>Положение:</b> '+n(s.position)+'<br><b>Авария:</b> '+(s.fault||'none')+(s.faultActuator?(' актуатор '+s.faultActuator):'');}catch(e){}finally{ub=0}}async function cmd(mode,b){if(cb)return;cb=1;let f=new FormData(document.getElementById('cmdform'));f.set('mode',mode);f.set('ajax','1');if(b)b.disabled=true;try{await rq('/window/cmd',{method:'POST',body:f,cache:'no-store'},700);setTimeout(upd,120);}catch(e){document.getElementById('wstatus').textContent='Команда отправлена, ответ ESP32 задерживается';}finally{cb=0;if(b)b.disabled=false;}}document.getElementById('target').addEventListener('change',upd);document.getElementById('cmdform').addEventListener('submit',e=>{e.preventDefault();let b=e.submitter;if(b)cmd(b.value,b);});document.querySelectorAll('#cmdform button[name=mode]').forEach(b=>b.addEventListener('pointerdown',e=>{e.preventDefault();cmd(b.value,b);}));setInterval(upd,4000);upd();</script>");
   appendPageFooter(html);
   server.send(200, "text/html; charset=utf-8", html);
+}
+
+static void handleMobileApp() {
+  if (!webAuth()) return;
+  String html;
+  html.reserve(9000);
+  html += F("<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'>");
+  html += F("<meta name='theme-color' content='#061229'><meta name='apple-mobile-web-app-capable' content='yes'><meta name='apple-mobile-web-app-title' content='Окна'>");
+  html += F("<link rel='manifest' href='/mobile/manifest.json'><title>Окна</title><style>");
+  html += F("*{box-sizing:border-box}body{margin:0;min-height:100vh;background:#030918;color:#eff7ff;font-family:Arial,sans-serif}main{max-width:520px;margin:auto;padding:22px 16px 28px}.panel{background:#061229;border:1px solid #13284d;border-radius:18px;padding:16px;box-shadow:0 18px 45px rgba(0,0,0,.34)}h1{font-size:24px;margin:6px 0 2px}p{color:#9fb1cf}.status{min-height:76px;line-height:1.35;margin:14px 0}.grid{display:grid;gap:12px}button{width:100%;border:0;border-radius:14px;padding:18px 16px;color:white;font-size:20px;font-weight:bold;touch-action:manipulation;background:#116fae}button:active{transform:scale(.99)}.open{background:#0984c6}.closed{background:#2452b8}.vent{background:#0f8d72}.stop{background:#9b1c2a}input,select{width:100%;padding:13px 12px;margin:6px 0 12px;border-radius:12px;border:1px solid #1a3763;background:#091735;color:white;font-size:16px}.row{display:flex;gap:8px}.row>*{flex:1}.link{background:transparent;border:1px solid #244a78;color:#8bdcff;font-size:15px;padding:11px}.hide{display:none}.small{font-size:13px;color:#7f91b0}");
+  html += F("</style></head><body><main><div class='panel'><h1>Управление окнами</h1><p>ESP32 window controller</p><label>Окно</label><select id='target'></select><div id='status' class='status'>Загрузка...</div><div class='grid'><button class='open' data-mode='open'>Открыто</button><button class='closed' data-mode='closed'>Закрыто</button><button class='vent' data-mode='vent'>Проветривание</button><button class='stop' data-mode='stop'>Стоп</button></div><p><button id='settingsBtn' class='link'>Настройки соединения</button></p></div>");
+  html += F("<div id='settings' class='panel hide' style='margin-top:14px'><h1>Соединение</h1><label>Адрес ESP32</label><input id='base' placeholder='http://192.168.100.5'><label>Логин</label><input id='user' placeholder='admin'><label>Пароль</label><input id='pass' type='password'><div class='row'><button id='save' class='link'>Сохранить</button><button id='reload' class='link'>Обновить окна</button></div><p class='small'>Если приложение открыто прямо с ESP32, адрес можно оставить как есть.</p></div></main>");
+  html += F("<script>let cfg=JSON.parse(localStorage.winApp||'{}'),busy=0,targets=[];const $=id=>document.getElementById(id);function base(){return (cfg.base||location.origin).replace(/\\/$/,'')}function hdr(){let h={};if(cfg.user||cfg.pass)h.Authorization='Basic '+btoa((cfg.user||'')+':'+(cfg.pass||''));return h}function n(v){return {open:'Открыто',closed:'Закрыто',vent:'Проветривание',none:'неизвестно'}[v]||v}function rq(u,o,m){let c=new AbortController(),t=setTimeout(()=>c.abort(),m);o=o||{};o.signal=c.signal;o.headers={...(o.headers||{}),...hdr()};return fetch(u,o).finally(()=>clearTimeout(t))}async function status(){if(busy)return;try{let t=$('target').value;if(!t)return;let r=await rq(base()+'/api/window?target='+encodeURIComponent(t),{cache:'no-store'},1000);let s=await r.json();$('status').innerHTML='<b>'+(s.name||'-')+'</b><br>Состояние: '+(s.state||'unknown')+'<br>Цель: '+n(s.target)+'<br>Авария: '+(s.fault||'none');}catch(e){$('status').textContent='Нет связи с ESP32'}}async function cmd(mode){if(busy)return;busy=1;$('status').textContent='Команда отправляется...';let f=new FormData();f.set('target',$('target').value);f.set('mode',mode);f.set('ajax','1');try{await rq(base()+'/window/cmd',{method:'POST',body:f,cache:'no-store'},900);setTimeout(status,160)}catch(e){$('status').textContent='Нет ответа ESP32'}finally{busy=0}}async function addTarget(v){try{let r=await rq(base()+'/api/window?target='+v,{cache:'no-store'},900);let s=await r.json();targets.push({v,n:s.name||v})}catch(e){}}async function loadTargets(){targets=[];await addTarget('local0');await addTarget('local1');try{let r=await rq(base()+'/api/rs485',{cache:'no-store'},1200);let j=await r.json();(j.nodes||[]).forEach((x,i)=>{if(x.enabled)targets.push({v:'rs'+i,n:(x.name||('RP2040 '+(i+1)))})})}catch(e){}$('target').innerHTML=targets.map(x=>'<option value=\"'+x.v+'\">'+x.n+'</option>').join('')||'<option value=\"local0\">local0</option>';status()}$('settingsBtn').onclick=()=>$('settings').classList.toggle('hide');$('save').onclick=()=>{cfg={base:$('base').value||location.origin,user:$('user').value,pass:$('pass').value};localStorage.winApp=JSON.stringify(cfg);loadTargets()};$('reload').onclick=loadTargets;document.querySelectorAll('button[data-mode]').forEach(b=>b.addEventListener('pointerdown',e=>{e.preventDefault();cmd(b.dataset.mode)}));$('target').onchange=status;$('base').value=cfg.base||location.origin;$('user').value=cfg.user||'';$('pass').value=cfg.pass||'';loadTargets();setInterval(status,5000);</script></body></html>");
+  server.send(200, "text/html; charset=utf-8", html);
+}
+
+static void handleMobileManifest() {
+  server.send(200, "application/manifest+json", "{\"name\":\"Окна ESP32\",\"short_name\":\"Окна\",\"start_url\":\"/mobile\",\"display\":\"standalone\",\"background_color\":\"#030918\",\"theme_color\":\"#061229\"}");
 }
 
 static void handleConfig() {
@@ -1656,6 +1686,7 @@ static void handleSave() {
 }
 
 static void handleWindowCommand() {
+  addApiCorsHeaders();
   if (!webAuth()) return;
   const String mode = server.arg("mode");
   const String target = server.hasArg("target") ? server.arg("target") : "local";
@@ -1705,6 +1736,7 @@ static void handleWindowSave() {
 }
 
 static void handleWindowApi() {
+  addApiCorsHeaders();
   if (!webAuth()) return;
   const String target = server.hasArg("target") ? server.arg("target") : "local";
   String body;
@@ -1803,6 +1835,7 @@ static void handleRs485Address() {
 }
 
 static void handleRs485Api() {
+  addApiCorsHeaders();
   if (!webAuth()) return;
   String json;
   json.reserve(3000);
@@ -1852,6 +1885,8 @@ static void beginWeb() {
     DBG_PRINTLN(WiFi.softAPIP());
   }
   server.on("/", HTTP_GET, handleRoot);
+  server.on("/mobile", HTTP_GET, handleMobileApp);
+  server.on("/mobile/manifest.json", HTTP_GET, handleMobileManifest);
   server.on("/learn", HTTP_GET, handleLearn);
   server.on("/clear", HTTP_GET, handleClear);
   server.on("/restart", HTTP_GET, handleRestart);
@@ -1862,13 +1897,16 @@ static void beginWeb() {
   server.on("/backup/export", HTTP_GET, handleBackupExport);
   server.on("/backup/import", HTTP_POST, handleBackupImport, handleBackupImportUpload);
   server.on("/window/cmd", HTTP_POST, handleWindowCommand);
+  server.on("/window/cmd", HTTP_OPTIONS, handleApiCorsOptions);
   server.on("/window/save", HTTP_POST, handleWindowSave);
   server.on("/api/window", HTTP_GET, handleWindowApi);
+  server.on("/api/window", HTTP_OPTIONS, handleApiCorsOptions);
   server.on("/rs485/cmd", HTTP_POST, handleRs485Command);
   server.on("/rs485/save", HTTP_POST, handleRs485Save);
   server.on("/rs485/discover", HTTP_GET, handleRs485Discover);
   server.on("/rs485/address", HTTP_POST, handleRs485Address);
   server.on("/api/rs485", HTTP_GET, handleRs485Api);
+  server.on("/api/rs485", HTTP_OPTIONS, handleApiCorsOptions);
   server.begin();
 }
 
