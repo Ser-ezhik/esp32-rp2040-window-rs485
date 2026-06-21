@@ -1017,12 +1017,7 @@ static void handleConfig() {
   html.reserve(17000);
   appendPageHeader(html, "ESP32 CC1101 receiver");
   html += F("<p><a class='btn' href='/'>Главная</a></p>");
-  html += F("<div class='card'><h2>Локальные RP2040 по UART</h2><form method='post' action='/window/save'>");
-  html += F("<label>Количество окон</label><select name='windows'><option value='1'");
-  if (windowCount == 1) html += F(" selected");
-  html += F(">1 окно</option><option value='2'");
-  if (windowCount == 2) html += F(" selected");
-  html += F(">2 окна</option></select>");
+  html += F("<div class='card'><form method='post' action='/window/save'>");
   for (uint8_t n = 0; n < LOCAL_RP_COUNT; ++n) {
     const LocalRpConfig &cfg = localRp[n];
     html += F("<div class='card'><h3>UART");
