@@ -123,6 +123,7 @@ static constexpr uint32_t COMMAND_REPEAT_DELAY_MS = 35;
 static constexpr uint8_t RS485_NODE_COUNT = 8;
 static constexpr uint8_t RS485_ACTUATORS = 4;
 static constexpr uint8_t RP_NAME_LEN = 33;
+static constexpr uint8_t ERROR_LOG_COUNT = 20;
 
 struct Rs485NodeConfig {
   bool enabled;
@@ -162,6 +163,13 @@ static String rs485Status[RS485_NODE_COUNT];
 static uint32_t rs485LastSeenMs[RS485_NODE_COUNT] = {0};
 static String rs485DiscoverLog;
 static String backupUploadData;
+static String errorLog[ERROR_LOG_COUNT];
+static uint8_t errorLogHead = 0;
+static uint8_t errorLogSize = 0;
+static String lastLocalFault[LOCAL_RP_COUNT];
+static int lastLocalFaultActuator[LOCAL_RP_COUNT] = {0};
+static String lastRs485Fault[RS485_NODE_COUNT];
+static int lastRs485FaultActuator[RS485_NODE_COUNT] = {0};
 
 struct PendingWindowCommand {
   bool active;
@@ -566,6 +574,75 @@ static void saveRs485Settings() {
     }
   }
   prefs.end();
+}
+
+static void loadErrorLog() {
+  prefs.begin("errlog", true);
+  errorLogHead = prefs.getUChar("head", 0);
+  errorLogSize = prefs.getUChar("size", 0);
+  if (errorLogHead >= ERROR_LOG_COUNT) errorLogHead = 0;
+  if (errorLogSize > ERROR_LOG_COUNT) errorLogSize = ERROR_LOG_COUNT;
+  for (uint8_t i = 0; i < ERROR_LOG_COUNT; ++i) {
+    char key[8];
+    snprintf(key, sizeof(key), "l%u", i);
+    errorLog[i] = prefs.getString(key, "");
+  }
+  prefs.end();
+}
+
+static void saveErrorLog() {
+  prefs.begin("errlog", false);
+  prefs.putUChar("head", errorLogHead);
+  prefs.putUChar("size", errorLogSize);
+  for (uint8_t i = 0; i < ERROR_LOG_COUNT; ++i) {
+    char key[8];
+    snprintf(key, sizeof(key), "l%u", i);
+    prefs.putString(key, errorLog[i]);
+  }
+  prefs.end();
+}
+
+static void clearErrorLog() {
+  for (uint8_t i = 0; i < ERROR_LOG_COUNT; ++i) errorLog[i] = "";
+  errorLogHead = 0;
+  errorLogSize = 0;
+  prefs.begin("errlog", false);
+  prefs.clear();
+  prefs.end();
+}
+
+static String uptimeText(uint32_t ms) {
+  const uint32_t totalSec = ms / 1000;
+  const uint32_t days = totalSec / 86400;
+  const uint8_t hours = (totalSec / 3600) % 24;
+  const uint8_t minutes = (totalSec / 60) % 60;
+  const uint8_t seconds = totalSec % 60;
+  char buf[24];
+  if (days > 0) {
+    snprintf(buf, sizeof(buf), "%lud %02u:%02u:%02u", static_cast<unsigned long>(days), hours, minutes, seconds);
+  } else {
+    snprintf(buf, sizeof(buf), "%02u:%02u:%02u", hours, minutes, seconds);
+  }
+  return String(buf);
+}
+
+static void appendErrorLog(const String &source, const String &fault, int actuator) {
+  String line = uptimeText(millis());
+  line += F(" | ");
+  line += source;
+  line += F(" | ");
+  line += fault;
+  if (actuator > 0) {
+    line += F(" | актуатор ");
+    line += String(actuator);
+  }
+  if (line.length() > 180) line = line.substring(0, 180);
+  errorLog[errorLogHead] = line;
+  errorLogHead = (errorLogHead + 1) % ERROR_LOG_COUNT;
+  if (errorLogSize < ERROR_LOG_COUNT) ++errorLogSize;
+  saveErrorLog();
+  DBG_PRINT("[ERRLOG] ");
+  DBG_PRINTLN(line);
 }
 
 static HardwareSerial *localRpSerial(uint8_t index) {
@@ -980,6 +1057,59 @@ static uint16_t rs485TargetBit(uint8_t index) {
   return index < RS485_NODE_COUNT ? static_cast<uint16_t>(1u << (index + LOCAL_RP_COUNT)) : 0;
 }
 
+static String jsonStringValue(const String &json, const char *key) {
+  String pattern = "\"";
+  pattern += key;
+  pattern += "\":\"";
+  int start = json.indexOf(pattern);
+  if (start < 0) return "";
+  start += pattern.length();
+  int end = start;
+  bool escape = false;
+  while (end < static_cast<int>(json.length())) {
+    const char c = json[end];
+    if (c == '"' && !escape) break;
+    escape = (c == '\\' && !escape);
+    if (c != '\\') escape = false;
+    ++end;
+  }
+  return json.substring(start, end);
+}
+
+static int jsonIntValue(const String &json, const char *key, int fallback) {
+  String pattern = "\"";
+  pattern += key;
+  pattern += "\":";
+  int start = json.indexOf(pattern);
+  if (start < 0) return fallback;
+  start += pattern.length();
+  while (start < static_cast<int>(json.length()) && json[start] == ' ') ++start;
+  int end = start;
+  while (end < static_cast<int>(json.length()) && (isDigit(json[end]) || json[end] == '-')) ++end;
+  if (end == start) return fallback;
+  return json.substring(start, end).toInt();
+}
+
+static bool isLoggableFault(String fault) {
+  fault.trim();
+  fault.toLowerCase();
+  return fault.length() > 0 && fault != "none" && fault != "ok" && fault != "stop" && fault != "stopped";
+}
+
+static void processStatusFault(const String &source, const String &statusJson, String &lastFault, int &lastActuator) {
+  String fault = jsonStringValue(statusJson, "fault");
+  const int actuator = jsonIntValue(statusJson, "faultActuator", 0);
+  if (!isLoggableFault(fault)) {
+    lastFault = "";
+    lastActuator = 0;
+    return;
+  }
+  if (fault == lastFault && actuator == lastActuator) return;
+  lastFault = fault;
+  lastActuator = actuator;
+  appendErrorLog(source, fault, actuator);
+}
+
 static String backupEscape(const String &input) {
   const char *hex = "0123456789ABCDEF";
   String out;
@@ -1333,6 +1463,22 @@ static void handleConfig() {
   html += F("<p><a class='btn' href='/backup/export'>Скачать настройки</a></p>");
   html += F("<form method='post' action='/backup/import' enctype='multipart/form-data'><label>Загрузить настройки из файла</label><input name='backup' type='file' accept='.txt,.cfg,.backup,text/plain'><button type='submit'>Загрузить настройки</button></form>");
   html += F("<p class='muted'>Файл содержит Wi-Fi, пульты, имена RP2040, токи, CAP1188 и адреса RS-485. После загрузки Wi-Fi может потребовать рестарт ESP32.</p></div>");
+  html += F("<div class='card'><h2>Журнал ошибок</h2>");
+  if (errorLogSize == 0) {
+    html += F("<p class='muted'>Ошибок пока нет.</p>");
+  } else {
+    html += F("<ol>");
+    for (uint8_t row = 0; row < errorLogSize; ++row) {
+      const int index = (static_cast<int>(errorLogHead) - 1 - row + ERROR_LOG_COUNT) % ERROR_LOG_COUNT;
+      if (errorLog[index].length() == 0) continue;
+      html += F("<li>");
+      html += htmlEscape(errorLog[index]);
+      html += F("</li>");
+    }
+    html += F("</ol>");
+  }
+  html += F("<form method='post' action='/errors/clear'><button class='danger' type='submit'>Очистить ошибки</button></form>");
+  html += F("<p class='muted'>Хранятся последние 20 аварий RP2040. Команда «Стоп» в журнал не записывается.</p></div>");
   html += F("<div class='card'><form method='post' action='/window/save'>");
   for (uint8_t n = 0; n < LOCAL_RP_COUNT; ++n) {
     const LocalRpConfig &cfg = localRp[n];
@@ -1619,6 +1765,13 @@ static void handleLearn() {
 static void handleClear() {
   if (!webAuth()) return;
   clearRecords();
+  server.sendHeader("Location", "/config");
+  server.send(303);
+}
+
+static void handleErrorLogClear() {
+  if (!webAuth()) return;
+  clearErrorLog();
   server.sendHeader("Location", "/config");
   server.send(303);
 }
@@ -1989,6 +2142,7 @@ static void beginWeb() {
   server.on("/mobile/manifest.json", HTTP_GET, handleMobileManifest);
   server.on("/learn", HTTP_GET, handleLearn);
   server.on("/clear", HTTP_GET, handleClear);
+  server.on("/errors/clear", HTTP_POST, handleErrorLogClear);
   server.on("/restart", HTTP_GET, handleRestart);
   server.on("/save", HTTP_POST, handleSave);
   server.on("/wifi", HTTP_POST, handleWifiSave);
@@ -2025,6 +2179,8 @@ static void readRp2040Port(uint8_t index) {
         if (rpLine[index].startsWith("{")) {
           lastRpStatus[index] = rpLine[index];
           lastRpStatusMs[index] = millis();
+          processStatusFault(String("UART") + String(index + 1) + " " + localRp[index].name,
+                             rpLine[index], lastLocalFault[index], lastLocalFaultActuator[index]);
         }
       }
       rpLine[index] = "";
@@ -2072,6 +2228,8 @@ static void handleRs485Line(String line) {
     if (rs485Nodes[i].address == addr) {
       rs485Status[i] = payload;
       rs485LastSeenMs[i] = millis();
+      processStatusFault(String("RS-485 addr ") + String(addr) + " " + rs485Nodes[i].name,
+                         payload, lastRs485Fault[i], lastRs485FaultActuator[i]);
       break;
     }
   }
@@ -2133,6 +2291,7 @@ void setup() {
   loadWifiSettings();
   loadWindowSettings();
   loadRs485Settings();
+  loadErrorLog();
   rpSerial1.begin(RP2040_UART_BAUD, SERIAL_8N1, RP2040_UART1_RX_PIN, RP2040_UART1_TX_PIN);
   rpSerial2.begin(RP2040_UART_BAUD, SERIAL_8N1, RP2040_UART2_RX_PIN, RP2040_UART2_TX_PIN);
   pinMode(RS485_DE_RE_PIN, OUTPUT);
