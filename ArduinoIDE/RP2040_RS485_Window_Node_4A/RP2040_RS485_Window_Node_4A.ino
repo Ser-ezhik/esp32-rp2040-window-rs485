@@ -374,6 +374,7 @@ static void setDirection(Direction dir) {
 }
 
 static void startMove(TargetMode newTarget) {
+  if (state == STATE_MOVING && target == newTarget) return;
   stopAll("none", 0, false);
   clearTimers();
   readReeds();

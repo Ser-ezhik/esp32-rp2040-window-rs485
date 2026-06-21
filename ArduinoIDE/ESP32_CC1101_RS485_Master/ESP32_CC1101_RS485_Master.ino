@@ -106,6 +106,8 @@ static constexpr int RS485_TX_PIN = 39;
 static constexpr int RS485_DE_RE_PIN = 40;
 static constexpr uint32_t RS485_BAUD = 38400;
 static constexpr uint32_t RS485_TURNAROUND_US = 120;
+static constexpr uint8_t COMMAND_REPEAT_COUNT = 3;
+static constexpr uint32_t COMMAND_REPEAT_DELAY_MS = 35;
 static constexpr uint8_t RS485_NODE_COUNT = 8;
 static constexpr uint8_t RS485_ACTUATORS = 4;
 static constexpr uint8_t RP_NAME_LEN = 33;
@@ -553,10 +555,18 @@ static void sendRpCommand(uint8_t index, const String &line) {
   if (!port) return;
   port->print(line);
   port->print('\n');
+  port->flush();
   Serial.print("[RP2040 UART");
   Serial.print(index + 1);
   Serial.print("] > ");
   Serial.println(line);
+}
+
+static void sendRpCommandReliable(uint8_t index, const String &line) {
+  for (uint8_t i = 0; i < COMMAND_REPEAT_COUNT; ++i) {
+    sendRpCommand(index, line);
+    if (i + 1 < COMMAND_REPEAT_COUNT) delay(COMMAND_REPEAT_DELAY_MS);
+  }
 }
 
 static void sendRpCommandAllLocal(const String &line) {
@@ -577,6 +587,13 @@ static void sendRs485Line(const String &line) {
   setRs485Tx(false);
   Serial.print("[RS485] > ");
   Serial.println(line);
+}
+
+static void sendRs485LineReliable(const String &line) {
+  for (uint8_t i = 0; i < COMMAND_REPEAT_COUNT; ++i) {
+    sendRs485Line(line);
+    if (i + 1 < COMMAND_REPEAT_COUNT) delay(COMMAND_REPEAT_DELAY_MS);
+  }
 }
 
 static String rs485ConfigLine(uint8_t index) {
@@ -677,11 +694,11 @@ static void executeRfAction(const ButtonRecord &record) {
     bool sent = false;
     for (uint8_t i = 0; i < LOCAL_RP_COUNT; ++i) {
       if (record.targetMask & localTargetBit(i)) {
-        sendRpCommand(i, commandLine);
+        sendRpCommandReliable(i, commandLine);
         sent = true;
       }
     }
-    if (!sent) sendRpCommand(0, commandLine);
+    if (!sent) sendRpCommandReliable(0, commandLine);
     return;
   }
   if (record.actionType == 2) {
@@ -689,18 +706,18 @@ static void executeRfAction(const ButtonRecord &record) {
     if (record.rs485Node >= RS485_NODE_COUNT) return;
     const Rs485NodeConfig &node = rs485Nodes[record.rs485Node];
     if (!node.enabled) return;
-    sendRs485Line("@" + String(node.address) + " " + commandLine);
+    sendRs485LineReliable("@" + String(node.address) + " " + commandLine);
     return;
   }
   if (record.actionType == 3) {
     if (!commandLine.length()) return;
     for (uint8_t i = 0; i < LOCAL_RP_COUNT; ++i) {
-      if (record.targetMask & localTargetBit(i)) sendRpCommand(i, commandLine);
+      if (record.targetMask & localTargetBit(i)) sendRpCommandReliable(i, commandLine);
     }
     for (uint8_t i = 0; i < RS485_NODE_COUNT; ++i) {
       if ((record.targetMask & rs485TargetBit(i)) == 0) continue;
       if (!rs485Nodes[i].enabled) continue;
-      sendRs485Line("@" + String(rs485Nodes[i].address) + " " + commandLine);
+      sendRs485LineReliable("@" + String(rs485Nodes[i].address) + " " + commandLine);
       delay(15);
     }
     return;
