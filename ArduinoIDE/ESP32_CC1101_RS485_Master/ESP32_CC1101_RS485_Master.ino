@@ -28,6 +28,11 @@ static const char *WIFI_SSID = "HOME";
 static const char *WIFI_PASSWORD = "123A123BC";
 static constexpr uint8_t WIFI_SSID_LEN = 33;
 static constexpr uint8_t WIFI_PASSWORD_LEN = 65;
+static constexpr bool ESP32_SERIAL_LOG = false; // UART0 is used by local RP2040 #2.
+
+#define DBG_PRINT(...) do { if (ESP32_SERIAL_LOG) Serial.print(__VA_ARGS__); } while (0)
+#define DBG_PRINTLN(...) do { if (ESP32_SERIAL_LOG) Serial.println(__VA_ARGS__); } while (0)
+#define DBG_PRINTF(...) do { if (ESP32_SERIAL_LOG) Serial.printf(__VA_ARGS__); } while (0)
 
 static const char *WEB_USER = "admin";
 static const char *WEB_PASSWORD = "admin12345";
@@ -213,7 +218,7 @@ static void pulseOutput(uint8_t index) {
   if (index >= OUTPUT_COUNT) return;
   setOutput(index, true);
   outputOffAt[index] = millis() + OUTPUT_PULSE_MS;
-  Serial.printf("[OUT] Output %u pulse\n", index + 1);
+  DBG_PRINTF("[OUT] Output %u pulse\n", index + 1);
 }
 
 static void updateOutputs() {
@@ -307,7 +312,7 @@ static bool beginRadio() {
   ELECHOUSE_cc1101.setGDO(PIN_GDO0, PIN_GDO2);
   ELECHOUSE_cc1101.Init();
   const bool detected = ELECHOUSE_cc1101.getCC1101();
-  Serial.println(detected ? "[BOOT] CC1101: OK" : "[BOOT] CC1101: FAIL");
+  DBG_PRINTLN(detected ? "[BOOT] CC1101: OK" : "[BOOT] CC1101: FAIL");
   if (!detected) return false;
   configureRadio();
   pinMode(PIN_GDO0, INPUT);
@@ -370,7 +375,7 @@ static void clearRecords() {
   lastMatchedIndex = -1;
   lastMatchedName[0] = '\0';
   saveRecords();
-  Serial.println("[MEM] All learned buttons cleared");
+  DBG_PRINTLN("[MEM] All learned buttons cleared");
 }
 
 static void loadRecords() {
@@ -556,10 +561,10 @@ static void sendRpCommand(uint8_t index, const String &line) {
   port->print(line);
   port->print('\n');
   port->flush();
-  Serial.print("[RP2040 UART");
-  Serial.print(index + 1);
-  Serial.print("] > ");
-  Serial.println(line);
+  DBG_PRINT("[RP2040 UART");
+  DBG_PRINT(index + 1);
+  DBG_PRINT("] > ");
+  DBG_PRINTLN(line);
 }
 
 static void sendRpCommandReliable(uint8_t index, const String &line) {
@@ -585,8 +590,8 @@ static void sendRs485Line(const String &line) {
   rs485Serial.flush();
   delayMicroseconds(RS485_TURNAROUND_US);
   setRs485Tx(false);
-  Serial.print("[RS485] > ");
-  Serial.println(line);
+  DBG_PRINT("[RS485] > ");
+  DBG_PRINTLN(line);
 }
 
 static void sendRs485LineReliable(const String &line) {
@@ -753,7 +758,7 @@ static bool addRecord(uint32_t code) {
     return true;
   }
   if (recordCount >= MAX_CODES) {
-    Serial.println("[LEARN] Memory full");
+    DBG_PRINTLN("[LEARN] Memory full");
     flashRgb(80, 0, 0);
     return false;
   }
@@ -768,7 +773,7 @@ static bool addRecord(uint32_t code) {
   snprintf(record.name, sizeof(record.name), "Button %u", recordCount + 1);
   ++recordCount;
   saveRecords();
-  Serial.printf("[LEARN] Added 0x%06lX\n", static_cast<unsigned long>(code & 0xFFFFFF));
+  DBG_PRINTF("[LEARN] Added 0x%06lX\n", static_cast<unsigned long>(code & 0xFFFFFF));
   flashRgb(0, 80, 0);
   return true;
 }
@@ -776,11 +781,11 @@ static bool addRecord(uint32_t code) {
 static void startLearnMode() {
   learnMode = true;
   learnStartedMs = millis();
-  Serial.println("[LEARN] Mode ON");
+  DBG_PRINTLN("[LEARN] Mode ON");
 }
 
 static void stopLearnMode(bool signalExit = false) {
-  if (learnMode) Serial.println("[LEARN] Mode OFF");
+  if (learnMode) DBG_PRINTLN("[LEARN] Mode OFF");
   learnMode = false;
   if (signalExit) blinkWhiteThreeTimes();
 }
@@ -794,7 +799,7 @@ static void handleCode(uint32_t code) {
   const uint32_t now = millis();
   lastSeenCode = code;
   lastSeenMs = now;
-  Serial.printf("[RF] Code 0x%06lX\n", static_cast<unsigned long>(code & 0xFFFFFF));
+  DBG_PRINTF("[RF] Code 0x%06lX\n", static_cast<unsigned long>(code & 0xFFFFFF));
   if (learnMode) {
     addRecord(code);
     return;
@@ -805,7 +810,7 @@ static void handleCode(uint32_t code) {
   const int index = findRecord(code);
   if (index < 0) {
     flashRgb(80, 0, 0);
-    Serial.println("[RF] Unknown code");
+    DBG_PRINTLN("[RF] Unknown code");
     return;
   }
   const ButtonRecord &record = records[index];
@@ -1761,20 +1766,20 @@ static void handleRs485Api() {
 static void beginWeb() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(wifiSsid, wifiPassword);
-  Serial.print("[WIFI] Connecting");
+  DBG_PRINT("[WIFI] Connecting");
   for (uint8_t i = 0; i < 40 && WiFi.status() != WL_CONNECTED; ++i) {
     delay(250);
-    Serial.print(".");
+    DBG_PRINT(".");
   }
-  Serial.println();
+  DBG_PRINTLN();
   if (WiFi.status() == WL_CONNECTED) {
-    Serial.print("[WIFI] IP: ");
-    Serial.println(WiFi.localIP());
+    DBG_PRINT("[WIFI] IP: ");
+    DBG_PRINTLN(WiFi.localIP());
   } else {
     WiFi.mode(WIFI_AP);
     WiFi.softAP(AP_SSID, AP_PASSWORD);
-    Serial.print("[WIFI] AP IP: ");
-    Serial.println(WiFi.softAPIP());
+    DBG_PRINT("[WIFI] AP IP: ");
+    DBG_PRINTLN(WiFi.softAPIP());
   }
   server.on("/", HTTP_GET, handleRoot);
   server.on("/learn", HTTP_GET, handleLearn);
@@ -1805,10 +1810,10 @@ static void readRp2040Port(uint8_t index) {
     if (c == '\n' || c == '\r') {
       rpLine[index].trim();
       if (rpLine[index].length()) {
-        Serial.print("[RP2040 UART");
-        Serial.print(index + 1);
-        Serial.print("] < ");
-        Serial.println(rpLine[index]);
+        DBG_PRINT("[RP2040 UART");
+        DBG_PRINT(index + 1);
+        DBG_PRINT("] < ");
+        DBG_PRINTLN(rpLine[index]);
         if (rpLine[index].startsWith("{")) {
           lastRpStatus[index] = rpLine[index];
           lastRpStatusMs[index] = millis();
@@ -1832,8 +1837,8 @@ static void handleRs485Line(String line) {
   if (space < 0) return;
   const int addr = line.substring(1, space).toInt();
   const String payload = line.substring(space + 1);
-  Serial.print("[RS485] < ");
-  Serial.println(line);
+  DBG_PRINT("[RS485] < ");
+  DBG_PRINTLN(line);
 
   if (payload.startsWith("DISCOVER ")) {
     rs485DiscoverLog += payload;
@@ -1907,9 +1912,9 @@ static void handleLearnButton() {
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  Serial.println("===============================================================");
-  Serial.println("ESP32-S3 + CC1101 RF receiver controller");
-  Serial.println("===============================================================");
+  DBG_PRINTLN("===============================================================");
+  DBG_PRINTLN("ESP32-S3 + CC1101 RF receiver controller");
+  DBG_PRINTLN("===============================================================");
   pinMode(PIN_LEARN_BUTTON, INPUT_PULLUP);
   setRgb(0, 0, 0);
   for (uint8_t i = 0; i < OUTPUT_COUNT; ++i) {
@@ -1925,13 +1930,13 @@ void setup() {
   pinMode(RS485_DE_RE_PIN, OUTPUT);
   setRs485Tx(false);
   rs485Serial.begin(RS485_BAUD, SERIAL_8N1, RS485_RX_PIN, RS485_TX_PIN);
-  Serial.print("[BOOT] Learned records: ");
-  Serial.println(recordCount);
+  DBG_PRINT("[BOOT] Learned records: ");
+  DBG_PRINTLN(recordCount);
   radioReady = beginRadio();
   if (radioReady) {
     resetRfCapture();
   } else {
-    Serial.println("[WARN] CC1101 not found, RF remotes are disabled");
+    DBG_PRINTLN("[WARN] CC1101 not found, RF remotes are disabled");
   }
   beginWeb();
   sendWindowConfigToRp2040();
