@@ -5,6 +5,8 @@
     <application
         android:allowBackup="true"
         android:usesCleartextTraffic="true"
+        android:icon="@drawable/ic_window_icon"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:label="Windows"
         android:theme="@style/AppTheme"
         android:supportsRtl="true">
