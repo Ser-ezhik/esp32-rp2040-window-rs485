@@ -3,6 +3,8 @@
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <WiFiUdp.h>
+#include <ESPmDNS.h>
 
 // ----------------------------- Hardware pins -----------------------------
 static constexpr int PIN_SCK = 12;
@@ -39,6 +41,8 @@ static const char *WEB_PASSWORD = "admin12345";
 
 static const char *AP_SSID = "ESP32-CC1101";
 static const char *AP_PASSWORD = "12345678";
+static constexpr uint16_t DISCOVERY_PORT = 4210;
+static const char *DISCOVERY_QUERY = "WINDOW_DISCOVER";
 
 // ----------------------------- RF settings -----------------------------
 static constexpr float RF_FREQ_MHZ = 433.92;
@@ -95,6 +99,8 @@ static char wifiPassword[WIFI_PASSWORD_LEN] = "";
 
 static Preferences prefs;
 static WebServer server(80);
+static WiFiUDP discoveryUdp;
+static char mdnsName[32] = "windows";
 static HardwareSerial rpSerial1(1);
 static HardwareSerial rpSerial2(0);
 static HardwareSerial rs485Serial(2);
@@ -1864,6 +1870,51 @@ static void handleRs485Api() {
   server.send(200, "application/json", json);
 }
 
+static void makeMdnsName() {
+  const uint64_t mac = ESP.getEfuseMac();
+  snprintf(mdnsName, sizeof(mdnsName), "windows-%06llx", static_cast<unsigned long long>(mac & 0xFFFFFF));
+}
+
+static void beginDiscovery() {
+  makeMdnsName();
+  if (MDNS.begin(mdnsName)) {
+    MDNS.addService("http", "tcp", 80);
+    MDNS.addServiceTxt("http", "tcp", "app", "window-control");
+    MDNS.addServiceTxt("http", "tcp", "path", "/mobile");
+  }
+  discoveryUdp.begin(DISCOVERY_PORT);
+}
+
+static void handleDiscovery() {
+  const int packetSize = discoveryUdp.parsePacket();
+  if (packetSize <= 0) return;
+
+  char packet[64];
+  const int len = discoveryUdp.read(packet, sizeof(packet) - 1);
+  if (len <= 0) return;
+  packet[len] = '\0';
+  String query = packet;
+  query.trim();
+  if (query != DISCOVERY_QUERY) return;
+
+  IPAddress ip = WiFi.status() == WL_CONNECTED ? WiFi.localIP() : WiFi.softAPIP();
+  String response;
+  response.reserve(180);
+  response += F("{\"type\":\"window_esp32\",\"name\":\"ESP32 Windows\",\"ip\":\"");
+  response += ip.toString();
+  response += F("\",\"url\":\"http://");
+  response += ip.toString();
+  response += F("/mobile\",\"mdns\":\"");
+  response += mdnsName;
+  response += F(".local\",\"mac\":\"");
+  response += WiFi.macAddress();
+  response += F("\"}");
+
+  discoveryUdp.beginPacket(discoveryUdp.remoteIP(), discoveryUdp.remotePort());
+  discoveryUdp.print(response);
+  discoveryUdp.endPacket();
+}
+
 static void beginWeb() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
@@ -1884,6 +1935,7 @@ static void beginWeb() {
     DBG_PRINT("[WIFI] AP IP: ");
     DBG_PRINTLN(WiFi.softAPIP());
   }
+  beginDiscovery();
   server.on("/", HTTP_GET, handleRoot);
   server.on("/mobile", HTTP_GET, handleMobileApp);
   server.on("/mobile/manifest.json", HTTP_GET, handleMobileManifest);
@@ -2054,6 +2106,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  handleDiscovery();
   processPendingWebCommand();
   readRp2040();
   readRs485();

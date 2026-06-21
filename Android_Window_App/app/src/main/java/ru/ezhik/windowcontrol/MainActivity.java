@@ -1,8 +1,10 @@
 package ru.ezhik.windowcontrol;
 
 import android.app.Activity;
+import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Color;
+import android.net.wifi.WifiManager;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.ViewGroup;
@@ -17,10 +19,17 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
     private static final String DEFAULT_HOST = "http://192.168.100.5";
     private static final String DEFAULT_USER = "admin";
+    private static final int DISCOVERY_PORT = 4210;
+    private static final String DISCOVERY_QUERY = "WINDOW_DISCOVER";
     private WebView webView;
     private SharedPreferences prefs;
 
@@ -121,6 +130,18 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        Button scan = new Button(this);
+        scan.setText("Scan ESP32");
+        root.addView(scan, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout results = new LinearLayout(this);
+        results.setOrientation(LinearLayout.VERTICAL);
+        root.addView(results, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
         EditText user = new EditText(this);
         user.setSingleLine(true);
         user.setTextColor(Color.WHITE);
@@ -157,7 +178,97 @@ public class MainActivity extends Activity {
             showWeb();
         });
 
+        scan.setOnClickListener(v -> scanEsp32(url, results));
+
         setContentView(root);
+        scanEsp32(url, results);
+    }
+
+    private String jsonValue(String json, String key) {
+        Pattern pattern = Pattern.compile("\"" + key + "\"\\s*:\\s*\"([^\"]*)\"");
+        Matcher matcher = pattern.matcher(json);
+        return matcher.find() ? matcher.group(1) : "";
+    }
+
+    private void addResultButton(EditText url, LinearLayout results, String label, String foundUrl) {
+        runOnUiThread(() -> {
+            Button button = new Button(this);
+            button.setText(label);
+            button.setOnClickListener(v -> url.setText(foundUrl.replace("/mobile", "")));
+            results.addView(button, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT));
+        });
+    }
+
+    private void scanEsp32(EditText url, LinearLayout results) {
+        results.removeAllViews();
+        TextView searching = new TextView(this);
+        searching.setText("Searching...");
+        searching.setTextColor(Color.rgb(170, 190, 220));
+        searching.setPadding(0, 8, 0, 8);
+        results.addView(searching);
+
+        new Thread(() -> {
+            WifiManager.MulticastLock lock = null;
+            try {
+                WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+                if (wifi != null) {
+                    lock = wifi.createMulticastLock("window-discovery");
+                    lock.setReferenceCounted(false);
+                    lock.acquire();
+                }
+
+                DatagramSocket socket = new DatagramSocket(DISCOVERY_PORT + 1);
+                socket.setBroadcast(true);
+                socket.setSoTimeout(650);
+                byte[] query = DISCOVERY_QUERY.getBytes("UTF-8");
+                DatagramPacket packet = new DatagramPacket(query, query.length, InetAddress.getByName("255.255.255.255"), DISCOVERY_PORT);
+                socket.send(packet);
+
+                long until = System.currentTimeMillis() + 1800;
+                byte[] buffer = new byte[512];
+                boolean found = false;
+                while (System.currentTimeMillis() < until) {
+                    try {
+                        DatagramPacket response = new DatagramPacket(buffer, buffer.length);
+                        socket.receive(response);
+                        String text = new String(response.getData(), 0, response.getLength(), "UTF-8");
+                        if (!text.contains("window_esp32")) continue;
+                        String foundUrl = jsonValue(text, "url");
+                        if (foundUrl.length() == 0) foundUrl = "http://" + response.getAddress().getHostAddress() + "/mobile";
+                        String name = jsonValue(text, "name");
+                        String ip = jsonValue(text, "ip");
+                        if (name.length() == 0) name = "ESP32 Windows";
+                        if (ip.length() == 0) ip = response.getAddress().getHostAddress();
+                        addResultButton(url, results, name + "  " + ip, foundUrl);
+                        found = true;
+                    } catch (Exception ignored) {
+                    }
+                }
+                socket.close();
+                boolean finalFound = found;
+                runOnUiThread(() -> {
+                    if (results.getChildCount() > 0) results.removeViewAt(0);
+                    if (!finalFound) {
+                        TextView none = new TextView(this);
+                        none.setText("ESP32 not found. Enter address manually.");
+                        none.setTextColor(Color.rgb(220, 170, 170));
+                        results.addView(none);
+                    }
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> {
+                    results.removeAllViews();
+                    TextView error = new TextView(this);
+                    error.setText("Search error. Enter address manually.");
+                    error.setTextColor(Color.rgb(220, 170, 170));
+                    results.addView(error);
+                });
+            } finally {
+                if (lock != null && lock.isHeld()) lock.release();
+            }
+        }).start();
     }
 
     @Override
