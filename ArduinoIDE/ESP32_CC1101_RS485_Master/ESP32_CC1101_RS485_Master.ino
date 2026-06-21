@@ -39,7 +39,6 @@ static constexpr bool ESP32_SERIAL_LOG = false; // UART0 is used by local RP2040
 static const char *WEB_USER = "admin";
 static const char *WEB_PASSWORD = "admin12345";
 
-static const char *AP_SSID = "ESP32-CC1101";
 static const char *AP_PASSWORD = "12345678";
 static constexpr uint16_t DISCOVERY_PORT = 4210;
 static const char *DISCOVERY_QUERY = "WINDOW_DISCOVER";
@@ -101,6 +100,8 @@ static Preferences prefs;
 static WebServer server(80);
 static WiFiUDP discoveryUdp;
 static char mdnsName[32] = "windows";
+static char setupApSsid[32] = "WindowSetup";
+static bool setupApMode = false;
 static HardwareSerial rpSerial1(1);
 static HardwareSerial rpSerial2(0);
 static HardwareSerial rs485Serial(2);
@@ -1259,6 +1260,11 @@ static void appendRs485Config(String &html) {
 }
 
 static void handleRoot() {
+  if (setupApMode) {
+    server.sendHeader("Location", "/setup");
+    server.send(302);
+    return;
+  }
   if (!webAuth()) return;
   String html;
   html.reserve(7000);
@@ -1872,6 +1878,7 @@ static void handleRs485Api() {
 static void makeMdnsName() {
   const uint64_t mac = ESP.getEfuseMac();
   snprintf(mdnsName, sizeof(mdnsName), "windows-%06llx", static_cast<unsigned long long>(mac & 0xFFFFFF));
+  snprintf(setupApSsid, sizeof(setupApSsid), "WindowSetup-%06llX", static_cast<unsigned long long>(mac & 0xFFFFFF));
 }
 
 static void beginDiscovery() {
@@ -1914,7 +1921,46 @@ static void handleDiscovery() {
   discoveryUdp.endPacket();
 }
 
+static void handleSetupPage() {
+  String html;
+  html.reserve(3500);
+  html += F("<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>");
+  html += F("<title>Window setup</title><style>");
+  html += F("body{margin:0;min-height:100vh;background:#030918;color:#eff7ff;font-family:Arial,sans-serif}main{max-width:520px;margin:auto;padding:22px 16px}.panel{background:#061229;border:1px solid #13284d;border-radius:18px;padding:16px;box-shadow:0 18px 45px rgba(0,0,0,.34)}h1{font-size:24px;margin:6px 0 10px}p{color:#9fb1cf;line-height:1.4}label{display:block;margin-top:12px;color:#9fb1cf;font-weight:bold}input{width:100%;box-sizing:border-box;padding:13px 12px;margin:6px 0 10px;border-radius:12px;border:1px solid #1a3763;background:#091735;color:white;font-size:16px}button{width:100%;border:0;border-radius:14px;padding:16px;color:white;font-size:18px;font-weight:bold;background:#0984c6;touch-action:manipulation}.small{font-size:13px;color:#7f91b0}");
+  html += F("</style></head><body><main><div class='panel'><h1>Настройка Wi-Fi</h1>");
+  html += F("<p>Подключите ESP32 к домашней Wi-Fi сети. После сохранения контроллер перезагрузится.</p>");
+  html += F("<form method='post' action='/setup/save'><label>Имя Wi-Fi</label><input name='ssid' maxlength='32' autocomplete='off' value='");
+  html += htmlEscape(wifiSsid);
+  html += F("'><label>Пароль Wi-Fi</label><input name='pass' maxlength='64' type='password' value='");
+  html += htmlEscape(wifiPassword);
+  html += F("'><button type='submit'>Сохранить и перезагрузить</button></form>");
+  html += F("<p class='small'>Точка доступа: ");
+  html += setupApSsid;
+  html += F("<br>Адрес setup: http://192.168.4.1/setup</p></div></main></body></html>");
+  server.send(200, "text/html; charset=utf-8", html);
+}
+
+static void handleSetupSave() {
+  String ssid = server.arg("ssid");
+  String pass = server.arg("pass");
+  ssid.trim();
+  if (ssid.length() == 0) {
+    server.send(400, "text/plain; charset=utf-8", "SSID не может быть пустым");
+    return;
+  }
+  if (ssid.length() >= WIFI_SSID_LEN || pass.length() >= WIFI_PASSWORD_LEN) {
+    server.send(400, "text/plain; charset=utf-8", "SSID или пароль слишком длинный");
+    return;
+  }
+  saveWifiSettings(ssid, pass);
+  server.send(200, "text/html; charset=utf-8", "<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'></head><body><h2>Wi-Fi сохранен</h2><p>ESP32 перезагружается. Верните телефон в домашнюю Wi-Fi сеть и нажмите Scan ESP32 в приложении.</p></body></html>");
+  delay(900);
+  ESP.restart();
+}
+
 static void beginWeb() {
+  makeMdnsName();
+  setupApMode = false;
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
   WiFi.begin(wifiSsid, wifiPassword);
@@ -1928,14 +1974,17 @@ static void beginWeb() {
     DBG_PRINT("[WIFI] IP: ");
     DBG_PRINTLN(WiFi.localIP());
   } else {
+    setupApMode = true;
     WiFi.mode(WIFI_AP);
     WiFi.setSleep(false);
-    WiFi.softAP(AP_SSID, AP_PASSWORD);
+    WiFi.softAP(setupApSsid, AP_PASSWORD);
     DBG_PRINT("[WIFI] AP IP: ");
     DBG_PRINTLN(WiFi.softAPIP());
   }
   beginDiscovery();
   server.on("/", HTTP_GET, handleRoot);
+  server.on("/setup", HTTP_GET, handleSetupPage);
+  server.on("/setup/save", HTTP_POST, handleSetupSave);
   server.on("/mobile", HTTP_GET, handleMobileApp);
   server.on("/mobile/manifest.json", HTTP_GET, handleMobileManifest);
   server.on("/learn", HTTP_GET, handleLearn);
