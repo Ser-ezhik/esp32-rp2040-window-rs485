@@ -672,7 +672,15 @@ static String rfActionLabel(const ButtonRecord &record) {
 static void executeRfAction(const ButtonRecord &record) {
   const String commandLine = windowCommandLine(record.actionCommand);
   if (record.actionType == 1) {
-    if (commandLine.length()) sendRpCommand(0, commandLine);
+    if (!commandLine.length()) return;
+    bool sent = false;
+    for (uint8_t i = 0; i < LOCAL_RP_COUNT; ++i) {
+      if (record.targetMask & localTargetBit(i)) {
+        sendRpCommand(i, commandLine);
+        sent = true;
+      }
+    }
+    if (!sent) sendRpCommand(0, commandLine);
     return;
   }
   if (record.actionType == 2) {
@@ -1180,7 +1188,7 @@ static void handleConfig() {
     }
     html += F("</select></td><td class='targetCell'><div class='targets'>");
     for (uint8_t local = 0; local < LOCAL_RP_COUNT; ++local) {
-      html += F("<label><input type='checkbox' name='tlocal");
+      html += F("<label class='localTarget'><input type='checkbox' name='tlocal");
       html += String(i);
       html += F("_");
       html += String(local);
@@ -1191,7 +1199,7 @@ static void handleConfig() {
       html += F("</label>");
     }
     for (uint8_t node = 0; node < RS485_NODE_COUNT; ++node) {
-      html += F("<label><input type='checkbox' name='tn");
+      html += F("<label class='rsTarget'><input type='checkbox' name='tn");
       html += String(i);
       html += F("_");
       html += String(node);
@@ -1227,7 +1235,7 @@ static void handleConfig() {
   }
   html += F("</table></div><p><button type='submit'>Сохранить</button></p></form>");
   html += F("<p class='muted'>Обучение: нажмите физическую кнопку или «Добавить пульт», затем нажимайте кнопки пульта. Повторное короткое нажатие или «Закончить обучение» возвращает рабочий режим.</p>");
-  html += F("<script>function rfRow(s){const r=s.closest('tr');if(!r)return;const a=s.value;function sh(c,on){const e=r.querySelector(c);if(e)e.classList.toggle('cellhide',!on)}sh('.cmdCell',a!='0');sh('.nodeCell',a=='2');sh('.targetCell',a=='3');sh('.outCell',a=='0')}document.querySelectorAll('.actsel').forEach(rfRow);</script>");
+  html += F("<script>function rfRow(s){const r=s.closest('tr');if(!r)return;const a=s.value;function sh(c,on){const e=r.querySelector(c);if(e)e.classList.toggle('cellhide',!on)}function all(c,on){r.querySelectorAll(c).forEach(e=>e.style.display=on?'flex':'none')}sh('.cmdCell',a!='0');sh('.nodeCell',a=='2');sh('.targetCell',a=='1'||a=='3');sh('.outCell',a=='0');all('.localTarget',a=='1'||a=='3');all('.rsTarget',a=='3')}document.querySelectorAll('.actsel').forEach(rfRow);</script>");
   html += F("<script>let activeLed=-1;function setLed(i,on){const e=document.getElementById('led'+i);if(e)e.classList.toggle('on',on);}async function rfStatus(){try{const r=await fetch('/api/status',{cache:'no-store'});if(!r.ok)return;const s=await r.json();document.getElementById('lastSeen').textContent=s.lastSeen||'-';document.getElementById('lastButton').textContent=s.lastButton||'-';document.getElementById('lastMatched').textContent=s.lastMatched||'-';document.getElementById('lastOutput').textContent=s.lastOutput||'-';document.getElementById('lastAge').textContent=s.lastMatchedAgeMs>=0?((s.lastMatchedAgeMs/1000).toFixed(1)+' s'):'-';const b=document.getElementById('learnBtn');if(b){b.textContent=s.learnMode?'Закончить обучение':'Добавить пульт';b.classList.toggle('danger',s.learnMode);}if(activeLed!==s.lastMatchedIndex){if(activeLed>=0)setLed(activeLed,false);activeLed=s.lastMatchedIndex;}if(s.lastMatchedAgeMs>=0&&s.lastMatchedAgeMs<700)setLed(s.lastMatchedIndex,true);else if(activeLed>=0)setLed(activeLed,false);}catch(e){}}setInterval(rfStatus,500);rfStatus();</script>");
   html += F("<script>async function winStatus(){for(let n=0;n<2;n++){try{const r=await fetch('/api/window?target=local'+n,{cache:'no-store'});const s=await r.json();const cur=s.current||[];const ok=s.inaOk||[];for(let a=0;a<4;a++){let c=document.getElementById('l'+n+'cur'+a);if(c)c.textContent=(cur[a]??0)+' mA';let o=document.getElementById('l'+n+'ina'+a);if(o)o.textContent=ok[a]?'OK':'нет';}let reeds=document.getElementById('l'+n+'reeds');if(reeds)reeds.textContent=(s.reed||[]).join(', ');let cap=document.getElementById('l'+n+'cap');if(cap)cap.textContent='0x'+Number(s.cap||0).toString(16);let fault=document.getElementById('l'+n+'fault');if(fault)fault.textContent=(s.fault||'none')+(s.faultActuator?(' actuator '+s.faultActuator):'');}catch(e){}}}setInterval(winStatus,700);winStatus();</script>");
   html += F("<script>async function rsStatus(){try{const r=await fetch('/api/rs485',{cache:'no-store'});const d=await r.json();(d.nodes||[]).forEach((n,i)=>{let e=document.getElementById('rs'+i+'status');if(e)e.textContent=n.status||'-';let s=n.json||{};let cur=s.current||[];let ok=s.inaOk||[];for(let a=0;a<4;a++){let c=document.getElementById('rs'+i+'cur'+a);if(c)c.textContent=(cur[a]??0)+' mA';let o=document.getElementById('rs'+i+'ina'+a);if(o)o.textContent=ok[a]?'OK':'нет';}let reeds=document.getElementById('rs'+i+'reeds');if(reeds)reeds.textContent=(s.reed||[]).join(', ');let cap=document.getElementById('rs'+i+'cap');if(cap)cap.textContent='0x'+Number(s.cap||0).toString(16);let fault=document.getElementById('rs'+i+'fault');if(fault)fault.textContent=(s.fault||'none')+(s.faultActuator?(' actuator '+s.faultActuator):'');})}catch(e){}}setInterval(rsStatus,1000);rsStatus();</script>");
@@ -1320,11 +1328,17 @@ static void handleSave() {
     if (server.hasArg(cmdKey)) record.actionCommand = static_cast<uint8_t>(constrain(server.arg(cmdKey).toInt(), 0, 4));
     if (server.hasArg(nodeKey)) record.rs485Node = static_cast<uint8_t>(constrain(server.arg(nodeKey).toInt(), 0, RS485_NODE_COUNT - 1));
     uint16_t targetMask = 0;
-    for (uint8_t local = 0; local < LOCAL_RP_COUNT; ++local) {
-      if (server.hasArg("tlocal" + String(i) + "_" + String(local))) targetMask |= localTargetBit(local);
+    if (record.actionType == 1 || record.actionType == 3) {
+      for (uint8_t local = 0; local < LOCAL_RP_COUNT; ++local) {
+        if (server.hasArg("tlocal" + String(i) + "_" + String(local))) targetMask |= localTargetBit(local);
+      }
     }
-    for (uint8_t node = 0; node < RS485_NODE_COUNT; ++node) {
-      if (server.hasArg("tn" + String(i) + "_" + String(node))) targetMask |= rs485TargetBit(node);
+    if (record.actionType == 3) {
+      for (uint8_t node = 0; node < RS485_NODE_COUNT; ++node) {
+        if (server.hasArg("tn" + String(i) + "_" + String(node))) targetMask |= rs485TargetBit(node);
+      }
+    } else if (record.actionType == 2) {
+      targetMask = rs485TargetBit(record.rs485Node);
     }
     if (targetMask == 0) {
       if (record.actionType == 1) targetMask = localTargetBit(0);
