@@ -147,6 +147,7 @@ static String rs485Line;
 static String rs485Status[RS485_NODE_COUNT];
 static uint32_t rs485LastSeenMs[RS485_NODE_COUNT] = {0};
 static String rs485DiscoverLog;
+static String backupUploadData;
 
 static volatile uint16_t isrPulseCount = 0;
 static volatile uint32_t isrPulseDurations[RF_MAX_PULSES];
@@ -864,6 +865,180 @@ static uint16_t rs485TargetBit(uint8_t index) {
   return index < RS485_NODE_COUNT ? static_cast<uint16_t>(1u << (index + LOCAL_RP_COUNT)) : 0;
 }
 
+static String backupEscape(const String &input) {
+  const char *hex = "0123456789ABCDEF";
+  String out;
+  out.reserve(input.length() + 8);
+  for (size_t i = 0; i < input.length(); ++i) {
+    const uint8_t c = static_cast<uint8_t>(input[i]);
+    const bool safe = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+    if (safe) out += static_cast<char>(c);
+    else {
+      out += '%';
+      out += hex[c >> 4];
+      out += hex[c & 0x0F];
+    }
+  }
+  return out;
+}
+
+static uint8_t hexNibble(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  return 0;
+}
+
+static String backupUnescape(const String &input) {
+  String out;
+  out.reserve(input.length());
+  for (size_t i = 0; i < input.length(); ++i) {
+    if (input[i] == '%' && i + 2 < input.length()) {
+      out += static_cast<char>((hexNibble(input[i + 1]) << 4) | hexNibble(input[i + 2]));
+      i += 2;
+    } else {
+      out += input[i];
+    }
+  }
+  return out;
+}
+
+static void appendBackupLine(String &out, const String &key, const String &value) {
+  out += key;
+  out += '=';
+  out += backupEscape(value);
+  out += '\n';
+}
+
+static void appendBackupLine(String &out, const String &key, uint32_t value) {
+  out += key;
+  out += '=';
+  out += String(value);
+  out += '\n';
+}
+
+static bool backupHasKey(const String &data, const String &key) {
+  const String needle = key + "=";
+  if (data.startsWith(needle)) return true;
+  return data.indexOf("\n" + needle) >= 0;
+}
+
+static String backupValue(const String &data, const String &key, const String &fallback = "") {
+  const String needle = key + "=";
+  int start = data.startsWith(needle) ? 0 : data.indexOf("\n" + needle);
+  if (start < 0) return fallback;
+  if (start > 0) ++start;
+  start += needle.length();
+  int end = data.indexOf('\n', start);
+  if (end < 0) end = data.length();
+  String raw = data.substring(start, end);
+  raw.trim();
+  return backupUnescape(raw);
+}
+
+static uint32_t backupUInt(const String &data, const String &key, uint32_t fallback) {
+  if (!backupHasKey(data, key)) return fallback;
+  return static_cast<uint32_t>(backupValue(data, key, String(fallback)).toInt());
+}
+
+static bool backupBool(const String &data, const String &key, bool fallback) {
+  if (!backupHasKey(data, key)) return fallback;
+  return backupValue(data, key, fallback ? "1" : "0").toInt() != 0;
+}
+
+static String buildSettingsBackup() {
+  String out;
+  out.reserve(18000);
+  out += F("ESP32_WINDOW_BACKUP_V1\n");
+  appendBackupLine(out, "wifi.ssid", wifiSsid);
+  appendBackupLine(out, "wifi.pass", wifiPassword);
+  appendBackupLine(out, "window.count", windowCount);
+  appendBackupLine(out, "window.mainTarget", mainWindowTarget);
+  for (uint8_t n = 0; n < LOCAL_RP_COUNT; ++n) {
+    const String p = "local." + String(n) + ".";
+    appendBackupLine(out, p + "name", localRp[n].name);
+    appendBackupLine(out, p + "zero", localRp[n].zeroCurrentMa);
+    appendBackupLine(out, p + "move", localRp[n].maxMoveMs);
+    appendBackupLine(out, p + "capEn", localRp[n].capEnabled ? 1 : 0);
+    appendBackupLine(out, p + "capMask", localRp[n].capMask);
+    appendBackupLine(out, p + "capMs", localRp[n].capConfirmMs);
+    for (uint8_t a = 0; a < LOCAL_ACTUATORS; ++a) appendBackupLine(out, p + "max" + String(a), localRp[n].maxCurrentMa[a]);
+  }
+  for (uint8_t n = 0; n < RS485_NODE_COUNT; ++n) {
+    const String p = "rs485." + String(n) + ".";
+    appendBackupLine(out, p + "enabled", rs485Nodes[n].enabled ? 1 : 0);
+    appendBackupLine(out, p + "addr", rs485Nodes[n].address);
+    appendBackupLine(out, p + "name", rs485Nodes[n].name);
+    appendBackupLine(out, p + "uid", rs485Nodes[n].uid);
+    appendBackupLine(out, p + "zero", rs485Nodes[n].zeroCurrentMa);
+    appendBackupLine(out, p + "move", rs485Nodes[n].maxMoveMs);
+    appendBackupLine(out, p + "capEn", rs485Nodes[n].capEnabled ? 1 : 0);
+    appendBackupLine(out, p + "capMask", rs485Nodes[n].capMask);
+    appendBackupLine(out, p + "capMs", rs485Nodes[n].capConfirmMs);
+    for (uint8_t a = 0; a < RS485_ACTUATORS; ++a) appendBackupLine(out, p + "max" + String(a), rs485Nodes[n].maxCurrentMa[a]);
+  }
+  appendBackupLine(out, "records.count", recordCount);
+  for (uint8_t i = 0; i < recordCount; ++i) {
+    const String p = "record." + String(i) + ".";
+    appendBackupLine(out, p + "code", records[i].code);
+    appendBackupLine(out, p + "out", records[i].output);
+    appendBackupLine(out, p + "act", records[i].actionType);
+    appendBackupLine(out, p + "cmd", records[i].actionCommand);
+    appendBackupLine(out, p + "node", records[i].rs485Node);
+    appendBackupLine(out, p + "tmask", records[i].targetMask);
+    appendBackupLine(out, p + "enabled", records[i].enabled ? 1 : 0);
+    appendBackupLine(out, p + "name", records[i].name);
+  }
+  return out;
+}
+
+static bool applySettingsBackup(const String &data) {
+  if (!data.startsWith("ESP32_WINDOW_BACKUP_V1")) return false;
+  saveWifiSettings(backupValue(data, "wifi.ssid", wifiSsid), backupValue(data, "wifi.pass", wifiPassword));
+  windowCount = constrain(static_cast<int>(backupUInt(data, "window.count", windowCount)), 1, 2);
+  strlcpy(mainWindowTarget, backupValue(data, "window.mainTarget", mainWindowTarget).c_str(), sizeof(mainWindowTarget));
+  for (uint8_t n = 0; n < LOCAL_RP_COUNT; ++n) {
+    const String p = "local." + String(n) + ".";
+    strlcpy(localRp[n].name, backupValue(data, p + "name", localRp[n].name).c_str(), sizeof(localRp[n].name));
+    localRp[n].zeroCurrentMa = constrain(static_cast<int>(backupUInt(data, p + "zero", localRp[n].zeroCurrentMa)), 1, 1000);
+    localRp[n].maxMoveMs = constrain(static_cast<int>(backupUInt(data, p + "move", localRp[n].maxMoveMs)), 1000, 180000);
+    localRp[n].capEnabled = backupBool(data, p + "capEn", localRp[n].capEnabled);
+    localRp[n].capMask = constrain(static_cast<int>(backupUInt(data, p + "capMask", localRp[n].capMask)), 0, 255);
+    localRp[n].capConfirmMs = constrain(static_cast<int>(backupUInt(data, p + "capMs", localRp[n].capConfirmMs)), 0, 5000);
+    for (uint8_t a = 0; a < LOCAL_ACTUATORS; ++a) localRp[n].maxCurrentMa[a] = constrain(static_cast<int>(backupUInt(data, p + "max" + String(a), localRp[n].maxCurrentMa[a])), 100, 10000);
+  }
+  saveWindowSettings();
+  sendWindowConfigToRp2040();
+  for (uint8_t n = 0; n < RS485_NODE_COUNT; ++n) {
+    const String p = "rs485." + String(n) + ".";
+    rs485Nodes[n].enabled = backupBool(data, p + "enabled", rs485Nodes[n].enabled);
+    rs485Nodes[n].address = constrain(static_cast<int>(backupUInt(data, p + "addr", rs485Nodes[n].address)), 1, 247);
+    strlcpy(rs485Nodes[n].name, backupValue(data, p + "name", rs485Nodes[n].name).c_str(), sizeof(rs485Nodes[n].name));
+    strlcpy(rs485Nodes[n].uid, backupValue(data, p + "uid", rs485Nodes[n].uid).c_str(), sizeof(rs485Nodes[n].uid));
+    rs485Nodes[n].zeroCurrentMa = constrain(static_cast<int>(backupUInt(data, p + "zero", rs485Nodes[n].zeroCurrentMa)), 1, 1000);
+    rs485Nodes[n].maxMoveMs = constrain(static_cast<int>(backupUInt(data, p + "move", rs485Nodes[n].maxMoveMs)), 1000, 180000);
+    rs485Nodes[n].capEnabled = backupBool(data, p + "capEn", rs485Nodes[n].capEnabled);
+    rs485Nodes[n].capMask = constrain(static_cast<int>(backupUInt(data, p + "capMask", rs485Nodes[n].capMask)), 0, 255);
+    rs485Nodes[n].capConfirmMs = constrain(static_cast<int>(backupUInt(data, p + "capMs", rs485Nodes[n].capConfirmMs)), 0, 5000);
+    for (uint8_t a = 0; a < RS485_ACTUATORS; ++a) rs485Nodes[n].maxCurrentMa[a] = constrain(static_cast<int>(backupUInt(data, p + "max" + String(a), rs485Nodes[n].maxCurrentMa[a])), 100, 10000);
+  }
+  saveRs485Settings();
+  recordCount = constrain(static_cast<int>(backupUInt(data, "records.count", recordCount)), 0, MAX_CODES);
+  for (uint8_t i = 0; i < recordCount; ++i) {
+    const String p = "record." + String(i) + ".";
+    records[i].code = backupUInt(data, p + "code", records[i].code);
+    records[i].output = constrain(static_cast<int>(backupUInt(data, p + "out", records[i].output)), 0, 255);
+    records[i].actionType = constrain(static_cast<int>(backupUInt(data, p + "act", records[i].actionType)), 0, 3);
+    records[i].actionCommand = constrain(static_cast<int>(backupUInt(data, p + "cmd", records[i].actionCommand)), 0, 4);
+    records[i].rs485Node = constrain(static_cast<int>(backupUInt(data, p + "node", records[i].rs485Node)), 0, RS485_NODE_COUNT - 1);
+    records[i].targetMask = backupUInt(data, p + "tmask", records[i].targetMask) & 0x03FF;
+    records[i].enabled = backupBool(data, p + "enabled", records[i].enabled);
+    strlcpy(records[i].name, backupValue(data, p + "name", records[i].name).c_str(), sizeof(records[i].name));
+  }
+  saveRecords();
+  return true;
+}
+
 static void appendPageHeader(String &html, const char *title) {
   html += F("<!doctype html><html><head><meta charset='utf-8'>");
   html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
@@ -1017,6 +1192,10 @@ static void handleConfig() {
   html.reserve(17000);
   appendPageHeader(html, "ESP32 CC1101 receiver");
   html += F("<p><a class='btn' href='/'>Главная</a></p>");
+  html += F("<div class='card'><h2>Резервная копия настроек</h2>");
+  html += F("<p><a class='btn' href='/backup/export'>Скачать настройки</a></p>");
+  html += F("<form method='post' action='/backup/import' enctype='multipart/form-data'><label>Загрузить настройки из файла</label><input name='backup' type='file' accept='.txt,.cfg,.backup,text/plain'><button type='submit'>Загрузить настройки</button></form>");
+  html += F("<p class='muted'>Файл содержит Wi-Fi, пульты, имена RP2040, токи, CAP1188 и адреса RS-485. После загрузки Wi-Fi может потребовать рестарт ESP32.</p></div>");
   html += F("<div class='card'><form method='post' action='/window/save'>");
   for (uint8_t n = 0; n < LOCAL_RP_COUNT; ++n) {
     const LocalRpConfig &cfg = localRp[n];
@@ -1236,6 +1415,36 @@ static void handleConfig() {
   html += F("<script>async function rsStatus(){try{const r=await fetch('/api/rs485',{cache:'no-store'});const d=await r.json();(d.nodes||[]).forEach((n,i)=>{let e=document.getElementById('rs'+i+'status');if(e)e.textContent=n.status||'-';let s=n.json||{};let cur=s.current||[];let ok=s.inaOk||[];for(let a=0;a<4;a++){let c=document.getElementById('rs'+i+'cur'+a);if(c)c.textContent=(cur[a]??0)+' mA';let o=document.getElementById('rs'+i+'ina'+a);if(o)o.textContent=ok[a]?'OK':'нет';}let reeds=document.getElementById('rs'+i+'reeds');if(reeds)reeds.textContent=(s.reed||[]).join(', ');let cap=document.getElementById('rs'+i+'cap');if(cap)cap.textContent='0x'+Number(s.cap||0).toString(16);let fault=document.getElementById('rs'+i+'fault');if(fault)fault.textContent=(s.fault||'none')+(s.faultActuator?(' actuator '+s.faultActuator):'');})}catch(e){}}setInterval(rsStatus,1000);rsStatus();</script>");
   appendPageFooter(html);
   server.send(200, "text/html", html);
+}
+
+static void handleBackupExport() {
+  if (!webAuth()) return;
+  server.sendHeader("Content-Disposition", "attachment; filename=esp32-window-settings.backup");
+  server.send(200, "text/plain; charset=utf-8", buildSettingsBackup());
+}
+
+static void handleBackupImportUpload() {
+  HTTPUpload &upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    backupUploadData = "";
+    backupUploadData.reserve(upload.totalSize > 0 ? upload.totalSize + 16 : 12000);
+  } else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (backupUploadData.length() + upload.currentSize < 32000) {
+      backupUploadData.concat(reinterpret_cast<const char *>(upload.buf), upload.currentSize);
+    }
+  }
+}
+
+static void handleBackupImport() {
+  if (!webAuth()) return;
+  const bool ok = applySettingsBackup(backupUploadData);
+  backupUploadData = "";
+  if (!ok) {
+    server.send(400, "text/plain; charset=utf-8", "Ошибка: файл настроек не распознан");
+    return;
+  }
+  server.sendHeader("Location", "/config");
+  server.send(303);
 }
 
 static void handleStatusApi() {
@@ -1548,6 +1757,8 @@ static void beginWeb() {
   server.on("/wifi", HTTP_POST, handleWifiSave);
   server.on("/api/status", HTTP_GET, handleStatusApi);
   server.on("/config", HTTP_GET, handleConfig);
+  server.on("/backup/export", HTTP_GET, handleBackupExport);
+  server.on("/backup/import", HTTP_POST, handleBackupImport, handleBackupImportUpload);
   server.on("/window/cmd", HTTP_POST, handleWindowCommand);
   server.on("/window/save", HTTP_POST, handleWindowSave);
   server.on("/api/window", HTTP_GET, handleWindowApi);
