@@ -7,6 +7,7 @@ import android.os.Bundle;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.webkit.WebChromeClient;
+import android.webkit.HttpAuthHandler;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -19,6 +20,7 @@ import android.widget.TextView;
 
 public class MainActivity extends Activity {
     private static final String DEFAULT_HOST = "http://192.168.100.5";
+    private static final String DEFAULT_USER = "admin";
     private WebView webView;
     private SharedPreferences prefs;
 
@@ -54,6 +56,18 @@ public class MainActivity extends Activity {
 
         webView.setWebChromeClient(new WebChromeClient());
         webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onReceivedHttpAuthRequest(WebView view, HttpAuthHandler handler, String host, String realm) {
+                String user = prefs.getString("user", DEFAULT_USER);
+                String pass = prefs.getString("pass", "");
+                if (user.length() > 0 || pass.length() > 0) {
+                    handler.proceed(user, pass);
+                } else {
+                    handler.cancel();
+                    showSettings("ESP32 login required");
+                }
+            }
+
             @Override
             public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {
                 if (request == null || request.isForMainFrame()) {
@@ -91,7 +105,7 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView hint = new TextView(this);
-        hint.setText("Enter ESP32 address. Example: http://192.168.100.5");
+        hint.setText("Enter ESP32 address and web login.");
         hint.setTextColor(Color.rgb(170, 190, 220));
         hint.setTextSize(15);
         hint.setPadding(0, 24, 0, 10);
@@ -107,6 +121,26 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
+        EditText user = new EditText(this);
+        user.setSingleLine(true);
+        user.setTextColor(Color.WHITE);
+        user.setHintTextColor(Color.rgb(130, 150, 180));
+        user.setText(prefs.getString("user", DEFAULT_USER));
+        user.setHint("Login");
+        root.addView(user, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        EditText pass = new EditText(this);
+        pass.setSingleLine(true);
+        pass.setTextColor(Color.WHITE);
+        pass.setHintTextColor(Color.rgb(130, 150, 180));
+        pass.setText(prefs.getString("pass", ""));
+        pass.setHint("Password");
+        root.addView(pass, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
         Button save = new Button(this);
         save.setText("Save and open");
         root.addView(save, new LinearLayout.LayoutParams(
@@ -116,6 +150,8 @@ public class MainActivity extends Activity {
         save.setOnClickListener(v -> {
             prefs.edit()
                     .putString("url", normalizeUrl(url.getText().toString()))
+                    .putString("user", user.getText().toString().trim())
+                    .putString("pass", pass.getText().toString())
                     .putBoolean("configured", true)
                     .apply();
             showWeb();
