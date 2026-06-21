@@ -1,3 +1,5 @@
 **/build/
 *.tmp
 *.log
+.android-build-tools/
+Android_Window_App/.gradle/
