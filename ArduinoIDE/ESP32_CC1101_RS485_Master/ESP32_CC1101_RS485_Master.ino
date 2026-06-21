@@ -1082,7 +1082,7 @@ static void appendPageHeader(String &html, const char *title) {
   html += F("table{width:100%;border-collapse:collapse;background:#07132c;color:#dce9ff}th,td{padding:6px 8px;border-bottom:1px solid #142446;text-align:left;vertical-align:middle}th{background:#0b1b3b;color:#9fb1cf;white-space:nowrap;text-transform:uppercase;font-size:12px}");
   html += F("input:not([type=checkbox]),select{width:100%;box-sizing:border-box;padding:7px 9px;margin:2px 0 6px;background:#0a1730;color:#f6fbff;border:1px solid #18345f;border-radius:8px;outline:0}input:not([type=checkbox]):focus,select:focus{border-color:#49b7e8;box-shadow:0 0 0 2px rgba(73,183,232,.18)}input[type=checkbox]{width:auto;margin:0 5px 0 0;vertical-align:middle;accent-color:#49b7e8}");
   html += F("button,.btn{display:inline-block;padding:8px 12px;margin:3px 2px;border:1px solid #16466f;background:#0b67a3;color:white;text-decoration:none;border-radius:8px;font-weight:bold;box-shadow:0 0 18px rgba(0,155,255,.14)}button:hover,.btn:hover{background:#1280c8}.danger{background:#9b1c2a;border-color:#d14252}.muted{color:#8394b4}.mainbtn{width:100%;font-size:20px;padding:16px;margin-top:8px}");
-  html += F(".card{background:#061229;padding:14px;margin:12px 0;border:1px solid #13284d;border-radius:16px;box-shadow:0 18px 45px rgba(0,0,0,.28),inset 0 1px 0 rgba(255,255,255,.03)}.scroll{overflow-x:auto}.rf-table{min-width:1180px}.rf-table td{white-space:nowrap}.rf-table input:not([type=checkbox]),.rf-table select{min-width:100px}");
+  html += F(".card{background:#061229;padding:14px;margin:12px 0;border:1px solid #13284d;border-radius:16px;box-shadow:0 18px 45px rgba(0,0,0,.28),inset 0 1px 0 rgba(255,255,255,.03)}.home-status{min-height:92px;line-height:1.35;margin:0 0 10px}.scroll{overflow-x:auto}.rf-table{min-width:1180px}.rf-table td{white-space:nowrap}.rf-table input:not([type=checkbox]),.rf-table select{min-width:100px}");
   html += F(".targets{display:grid;grid-template-columns:repeat(2,minmax(120px,1fr));gap:4px 10px;min-width:260px}.targets label{display:flex;align-items:center;white-space:nowrap}.cellhide>*{display:none!important}");
   html += F("a{color:#7fd4ff}.led{width:16px;height:16px;border-radius:50%;background:#030712;border:1px solid #2c3d5f;box-shadow:inset 0 0 4px #000;display:inline-block}.led.on{background:#42d6ff;border-color:#83e6ff;box-shadow:0 0 12px #42d6ff}.center{text-align:center}");
   html += F("</style></head><body><main><h1>Приемник ESP32 CC1101</h1>");
@@ -1181,8 +1181,8 @@ static void handleRoot() {
   String html;
   html.reserve(7000);
   appendPageHeader(html, "Window controller");
-  html += F("<div class='card'><h2>Управление окнами</h2><p id='wstatus'>Загрузка статуса...</p>");
-  html += F("<form method='post' action='/window/cmd'><label>Выберите окно</label><select id='target' name='target'>");
+  html += F("<div class='card'><h2>Управление окнами</h2><p id='wstatus' class='home-status'>Загрузка статуса...</p>");
+  html += F("<form id='cmdform' method='post' action='/window/cmd'><label>Выберите окно</label><select id='target' name='target'>");
   for (uint8_t i = 0; i < LOCAL_RP_COUNT; ++i) {
     String targetValue = "local" + String(i);
     html += F("<option value='");
@@ -1213,7 +1213,7 @@ static void handleRoot() {
   html += F("<button class='mainbtn' name='mode' value='vent' type='submit'>Проветривание</button>");
   html += F("<button name='mode' value='stop' class='danger' type='submit'>Стоп</button></form>");
   html += F("<p><a href='/config'>config</a></p></div>");
-  html += F("<script>function n(v){return {open:'Открыто',closed:'Закрыто',vent:'Проветривание',none:'неизвестно'}[v]||v}async function upd(){try{let t=document.getElementById('target').value;let r=await fetch('/api/window?target='+encodeURIComponent(t),{cache:'no-store'});let s=await r.json();document.getElementById('wstatus').innerHTML='<b>Окно:</b> '+(s.name||'-')+'<br><b>Состояние:</b> '+(s.state||'unknown')+'<br><b>Цель:</b> '+n(s.target)+'<br><b>Положение:</b> '+n(s.position)+'<br><b>Авария:</b> '+(s.fault||'none')+(s.faultActuator?(' актуатор '+s.faultActuator):'');}catch(e){document.getElementById('wstatus').textContent='Нет связи';}}document.getElementById('target').addEventListener('change',upd);setInterval(upd,700);upd();</script>");
+  html += F("<script>function n(v){return {open:'Открыто',closed:'Закрыто',vent:'Проветривание',none:'неизвестно'}[v]||v}async function upd(){try{let t=document.getElementById('target').value;let r=await fetch('/api/window?target='+encodeURIComponent(t),{cache:'no-store'});let s=await r.json();document.getElementById('wstatus').innerHTML='<b>Окно:</b> '+(s.name||'-')+'<br><b>Состояние:</b> '+(s.state||'unknown')+'<br><b>Цель:</b> '+n(s.target)+'<br><b>Положение:</b> '+n(s.position)+'<br><b>Авария:</b> '+(s.fault||'none')+(s.faultActuator?(' актуатор '+s.faultActuator):'');}catch(e){document.getElementById('wstatus').textContent='Нет связи';}}document.getElementById('target').addEventListener('change',upd);document.getElementById('cmdform').addEventListener('submit',async e=>{e.preventDefault();let b=e.submitter;if(!b)return;let f=new FormData(e.target);f.set('mode',b.value);f.set('ajax','1');b.disabled=true;try{await fetch('/window/cmd',{method:'POST',body:f,cache:'no-store'});setTimeout(upd,80);}finally{b.disabled=false;}});setInterval(upd,700);upd();</script>");
   appendPageFooter(html);
   server.send(200, "text/html; charset=utf-8", html);
 }
@@ -1596,13 +1596,16 @@ static void handleWindowCommand() {
   const String mode = server.arg("mode");
   const String target = server.hasArg("target") ? server.arg("target") : "local";
   strlcpy(mainWindowTarget, target.c_str(), sizeof(mainWindowTarget));
-  saveWindowSettings();
   uint8_t command = 0;
   if (mode == "open") command = 1;
   else if (mode == "closed") command = 2;
   else if (mode == "vent") command = 3;
   else if (mode == "stop") command = 4;
-  sendWindowTargetCommand(target, windowCommandLine(command));
+  const bool ok = sendWindowTargetCommand(target, windowCommandLine(command));
+  if (server.hasArg("ajax")) {
+    server.send(ok ? 200 : 400, "text/plain; charset=utf-8", ok ? "OK" : "ERR");
+    return;
+  }
   server.sendHeader("Location", "/");
   server.send(303);
 }
